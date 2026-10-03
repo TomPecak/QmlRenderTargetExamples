@@ -1,0 +1,1 @@
+add_subdirectory(rendercontrol_opengl_test/)
