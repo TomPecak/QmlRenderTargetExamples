@@ -7,6 +7,8 @@
 #include <QOpenGLContext>
 #include <QOpenGLFramebufferObject>
 #include <QOpenGLFunctions>
+#include <QQuickRenderTarget>
+
 
 class RenderControl : public QQuickRenderControl
 {
@@ -32,6 +34,8 @@ QmlOffscreenRenderer::QmlOffscreenRenderer(QWindow *hostWindow,
                                            QObject *parent)
     : QObject(parent)
     ,  m_quickReady(false)
+    ,       m_textureId(0)
+    ,       m_dpr(0)
     , m_hostWindow(hostWindow)
     , m_context(context)
 {
@@ -61,6 +65,12 @@ QmlOffscreenRenderer::QmlOffscreenRenderer(QWindow *hostWindow,
     m_updateTimer.setSingleShot(true);
     m_updateTimer.setInterval(5);
     connect(&m_updateTimer, &QTimer::timeout, this, &QmlOffscreenRenderer::render);
+
+        connect(m_quickWindow, &QQuickWindow::sceneGraphInitialized, this, &QmlOffscreenRenderer::createTexture);
+        connect(m_quickWindow, &QQuickWindow::sceneGraphInvalidated, this, &QmlOffscreenRenderer::destroyTexture);
+
+        connect(m_renderControl, &QQuickRenderControl::renderRequested, this, &QmlOffscreenRenderer::requestUpdate);
+        connect(m_renderControl, &QQuickRenderControl::sceneChanged, this, &QmlOffscreenRenderer::requestUpdate);
 }
 
 QmlOffscreenRenderer::~QmlOffscreenRenderer() {}
@@ -86,4 +96,32 @@ void QmlOffscreenRenderer::render()
     m_quickReady = true;
 
     Q_EMIT textureUpdated();
+}
+
+void QmlOffscreenRenderer::destroyTexture()
+{
+    m_context->functions()->glDeleteTextures(1, &(m_textureId));
+    m_textureId = 0;
+}
+
+void QmlOffscreenRenderer::requestUpdate()
+{
+    if (!m_updateTimer.isActive())
+        m_updateTimer.start();
+}
+
+void QmlOffscreenRenderer::createTexture()
+{
+    // The scene graph has been initialized. It is now time to create an texture and associate
+    // it with the QQuickWindow.
+    m_dpr = m_hostWindow->devicePixelRatio();
+    m_textureSize = m_hostWindow->size() * m_dpr;
+    QOpenGLFunctions *f = m_context->functions();
+    f->glGenTextures(1, &m_textureId);
+    f->glBindTexture(GL_TEXTURE_2D, m_textureId);
+    f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    f->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_textureSize.width(), m_textureSize.height(), 0,
+                    GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    m_quickWindow->setRenderTarget(QQuickRenderTarget::fromOpenGLTexture(m_textureId, m_textureSize));
 }

@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QTimer>
+#include <QSize>
 
 QT_BEGIN_NAMESPACE
 class QWindow;
@@ -30,6 +31,13 @@ public:
      QOpenGLContext *m_context;
        QOffscreenSurface *m_offscreenSurface;
           bool m_quickReady;
+              qreal m_dpr;
+
+          uint m_textureId;
+          QSize m_textureSize;
+
+      public slots:
+               void createTexture();
 
  signals:
      // Sygnał emitowany, gdy QML przeliczył animacje i wyrenderował nową klatkę do tekstury
@@ -37,6 +45,9 @@ public:
 
 private slots:
      void render();
+         void destroyTexture();
+             void requestUpdate();
+
 
 private:
 

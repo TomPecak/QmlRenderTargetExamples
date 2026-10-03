@@ -41,10 +41,10 @@ protected:
 private slots:
     void run();
 
-    void createTexture();
-    void destroyTexture();
+
+
     void render();
-    void requestUpdate();
+
     void handleScreenChange();
 
 private:
@@ -58,13 +58,12 @@ private:
 
     QQmlComponent *m_qmlComponent;
     QQuickItem *m_rootItem;
-    uint m_textureId;
-    QSize m_textureSize;
+
     bool m_quickInitialized;
 
 
     CubeRenderer *m_cubeRenderer;
-    qreal m_dpr;
+
 
     QmlOffscreenRenderer *m_qmlRenderer;
 
