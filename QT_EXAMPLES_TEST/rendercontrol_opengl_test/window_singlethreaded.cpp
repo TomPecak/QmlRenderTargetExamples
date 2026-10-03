@@ -24,9 +24,6 @@
 
 
 WindowSingleThreaded::WindowSingleThreaded()
-    : m_rootItem(nullptr),
-
-      m_quickInitialized(false)
 {
     setSurfaceType(QSurface::OpenGLSurface);
 
@@ -55,15 +52,14 @@ WindowSingleThreaded::WindowSingleThreaded()
 //-------------------------------------
 
     m_cubeRenderer = new CubeRenderer(m_offscreenSurface);
+     //m_cubeRenderer = new CubeRenderer(nullptr);
 
 
     connect(m_qmlRenderer, &QmlOffscreenRenderer::textureUpdated, this, &WindowSingleThreaded::render);
 
 
 
-    // Now hook up the signals. For simplicy we don't differentiate between
-    // renderRequested (only render is needed, no sync) and sceneChanged (polish and sync
-    // is needed too).
+
 
 
 
@@ -84,22 +80,8 @@ WindowSingleThreaded::~WindowSingleThreaded()
 
     delete m_cubeRenderer;
 
-
-
-
-    delete m_qmlComponent;
-    delete m_qmlEngine;
-    delete m_quickWindow;
-    delete m_renderControl;
-
-    if (m_qmlRenderer->m_textureId)
-        m_context->functions()->glDeleteTextures(1, &(m_qmlRenderer->m_textureId));
-
+    delete m_qmlRenderer;
     m_context->doneCurrent();
-
-
-
-    delete m_offscreenSurface;
     delete m_context;
 }
 
@@ -118,126 +100,60 @@ void WindowSingleThreaded::render()
 
 
 
-void WindowSingleThreaded::run()
-{
-    disconnect(m_qmlComponent, &QQmlComponent::statusChanged, this, &WindowSingleThreaded::run);
 
-    if (m_qmlComponent->isError()) {
-        const QList<QQmlError> errorList = m_qmlComponent->errors();
-        for (const QQmlError &error : errorList)
-            qWarning() << error.url() << error.line() << error;
-        return;
-    }
 
-    QObject *rootObject = m_qmlComponent->create();
-    if (m_qmlComponent->isError()) {
-        const QList<QQmlError> errorList = m_qmlComponent->errors();
-        for (const QQmlError &error : errorList)
-            qWarning() << error.url() << error.line() << error;
-        return;
-    }
 
-    m_rootItem = qobject_cast<QQuickItem *>(rootObject);
-    if (!m_rootItem) {
-        qWarning("run: Not a QQuickItem");
-        delete rootObject;
-        return;
-    }
 
-    // The root item is ready. Associate it with the window.
-    m_rootItem->setParentItem(m_quickWindow->contentItem());
-
-    // Update item and rendering related geometries.
-    updateSizes();
-
-    // Ensure key events are received by the root Rectangle.
-    m_rootItem->forceActiveFocus();
-
-    // Initialize the render control and our OpenGL resources.
-    m_context->makeCurrent(m_offscreenSurface);
-    m_quickWindow->setGraphicsDevice(QQuickGraphicsDevice::fromOpenGLContext(m_context));
-    m_renderControl->initialize();
-    m_quickInitialized = true;
-}
-
-void WindowSingleThreaded::updateSizes()
-{
-    // Behave like SizeRootObjectToView.
-    m_rootItem->setWidth(width());
-    m_rootItem->setHeight(height());
-
-    m_quickWindow->setGeometry(0, 0, width(), height());
-
-    m_cubeRenderer->resize(width(), height());
-}
-
-void WindowSingleThreaded::startQuick(const QString &filename)
-{
-    m_qmlComponent = new QQmlComponent(m_qmlEngine, QUrl(filename));
-    if (m_qmlComponent->isLoading())
-        connect(m_qmlComponent, &QQmlComponent::statusChanged, this, &WindowSingleThreaded::run);
-    else
-        run();
-}
 
 void WindowSingleThreaded::exposeEvent(QExposeEvent *)
 {
     if (isExposed()) {
-        if (!m_quickInitialized) {
+        if (!m_qmlRenderer->m_quickInitialized) {
             m_cubeRenderer->render(this, m_context, m_qmlRenderer->m_quickReady ?  m_qmlRenderer->m_textureId : 0);
-            startQuick(QStringLiteral("qrc:/qt/qml/rendercontrol/demo.qml"));
+            m_qmlRenderer->startQuick(QStringLiteral("qrc:/qt/qml/rendercontrol/demo.qml"));
+            m_cubeRenderer->resize(width(), height());
         }
     }
 }
 
-void WindowSingleThreaded::resizeTexture()
-{
-    if (m_rootItem && m_context->makeCurrent(m_offscreenSurface)) {
-        m_context->functions()->glDeleteTextures(1, &(m_qmlRenderer->m_textureId));
-         m_qmlRenderer->m_textureId = 0;
-        m_qmlRenderer->createTexture();
-        m_context->doneCurrent();
-        updateSizes();
-        render();
-    }
-}
+
 
 void WindowSingleThreaded::resizeEvent(QResizeEvent *)
 {
     // If this is a resize after the scene is up and running, recreate the texture and the
     // Quick item and scene.
-    if (m_qmlRenderer->m_textureId && m_qmlRenderer->m_textureSize != size() * devicePixelRatio())
-        resizeTexture();
+    if (m_qmlRenderer->m_textureId && m_qmlRenderer->m_textureSize != size() * devicePixelRatio()){
+        m_qmlRenderer->resizeTexture();
+        m_cubeRenderer->resize(width(), height());
+    }
 }
 
 void WindowSingleThreaded::handleScreenChange()
 {
-    if (m_qmlRenderer->m_dpr != devicePixelRatio())
-        resizeTexture();
+    if (m_qmlRenderer->m_dpr != devicePixelRatio()){
+        m_qmlRenderer->resizeTexture();
+                m_cubeRenderer->resize(width(), height());
+    }
 }
 
 void WindowSingleThreaded::mousePressEvent(QMouseEvent *e)
 {
-    // Use the constructor taking position and globalPosition. That puts position into the
-    // event's position and scenePosition, and globalPosition into the event's globalPosition. This way
-    // the scenePosition in e is ignored and is replaced by position. This is necessary
-    // because QQuickWindow thinks of itself as a top-level window always.
-    QMouseEvent mappedEvent(e->type(), e->position(), e->globalPosition(), e->button(), e->buttons(), e->modifiers());
-    QCoreApplication::sendEvent(m_quickWindow, &mappedEvent);
+    m_qmlRenderer->mousePressEvent(e);
+
 }
 
 void WindowSingleThreaded::mouseReleaseEvent(QMouseEvent *e)
 {
-    QMouseEvent mappedEvent(e->type(), e->position(), e->globalPosition(), e->button(), e->buttons(), e->modifiers());
-    QCoreApplication::sendEvent(m_quickWindow, &mappedEvent);
+    m_qmlRenderer->mouseReleaseEvent(e);
 }
 
 void WindowSingleThreaded::keyPressEvent(QKeyEvent *e)
 {
-    QCoreApplication::sendEvent(m_quickWindow, e);
+
+    m_qmlRenderer->keyPressEvent(e);
 }
 
 void WindowSingleThreaded::keyReleaseEvent(QKeyEvent *e)
 {
-    QCoreApplication::sendEvent(m_quickWindow, e);
+    m_qmlRenderer->keyReleaseEvent(e);
 }

@@ -39,7 +39,7 @@ protected:
     void keyReleaseEvent(QKeyEvent *e) override;
 
 private slots:
-    void run();
+
 
 
 
@@ -48,18 +48,14 @@ private slots:
     void handleScreenChange();
 
 private:
-    void startQuick(const QString &filename);
-    void updateSizes();
-    void resizeTexture();
+
+
 
     QOpenGLContext *m_context;
 
 
 
-    QQmlComponent *m_qmlComponent;
-    QQuickItem *m_rootItem;
 
-    bool m_quickInitialized;
 
 
     CubeRenderer *m_cubeRenderer;

@@ -1,14 +1,20 @@
 #include "qmloffscreenrenderer.h"
 
-#include <QQmlEngine>
-#include <QQuickRenderControl>
-#include <QQuickWindow>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QOpenGLFramebufferObject>
 #include <QOpenGLFunctions>
+#include <QQmlEngine>
+#include <QQuickGraphicsDevice>
+#include <QQuickItem>
+#include <QQuickRenderControl>
 #include <QQuickRenderTarget>
-
+#include <QQuickWindow>
+#include <QEvent>
+#include <QExposeEvent>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QResizeEvent>
 
 class RenderControl : public QQuickRenderControl
 {
@@ -33,11 +39,13 @@ QmlOffscreenRenderer::QmlOffscreenRenderer(QWindow *hostWindow,
                                            QOpenGLContext *context,
                                            QObject *parent)
     : QObject(parent)
-    ,  m_quickReady(false)
-    ,       m_textureId(0)
-    ,       m_dpr(0)
+    , m_quickReady(false)
+    , m_textureId(0)
+    , m_dpr(0)
     , m_hostWindow(hostWindow)
     , m_context(context)
+    , m_rootItem(nullptr)
+    , m_quickInitialized(false)
 {
     m_offscreenSurface = new QOffscreenSurface;
     // Pass m_context->format(), not format. Format does not specify and color buffer
@@ -46,7 +54,6 @@ QmlOffscreenRenderer::QmlOffscreenRenderer(QWindow *hostWindow,
     // compatible with the context's configuration.
     m_offscreenSurface->setFormat(m_context->format());
     m_offscreenSurface->create();
-
 
     m_renderControl = new RenderControl(m_hostWindow);
 
@@ -66,14 +73,42 @@ QmlOffscreenRenderer::QmlOffscreenRenderer(QWindow *hostWindow,
     m_updateTimer.setInterval(5);
     connect(&m_updateTimer, &QTimer::timeout, this, &QmlOffscreenRenderer::render);
 
-        connect(m_quickWindow, &QQuickWindow::sceneGraphInitialized, this, &QmlOffscreenRenderer::createTexture);
-        connect(m_quickWindow, &QQuickWindow::sceneGraphInvalidated, this, &QmlOffscreenRenderer::destroyTexture);
+    // Now hook up the signals. For simplicy we don't differentiate between
+    // renderRequested (only render is needed, no sync) and sceneChanged (polish and sync
+    // is needed too).
 
-        connect(m_renderControl, &QQuickRenderControl::renderRequested, this, &QmlOffscreenRenderer::requestUpdate);
-        connect(m_renderControl, &QQuickRenderControl::sceneChanged, this, &QmlOffscreenRenderer::requestUpdate);
+    connect(m_quickWindow,
+            &QQuickWindow::sceneGraphInitialized,
+            this,
+            &QmlOffscreenRenderer::createTexture);
+    connect(m_quickWindow,
+            &QQuickWindow::sceneGraphInvalidated,
+            this,
+            &QmlOffscreenRenderer::destroyTexture);
+    connect(m_renderControl,
+            &QQuickRenderControl::renderRequested,
+            this,
+            &QmlOffscreenRenderer::requestUpdate);
+    connect(m_renderControl,
+            &QQuickRenderControl::sceneChanged,
+            this,
+            &QmlOffscreenRenderer::requestUpdate);
 }
 
-QmlOffscreenRenderer::~QmlOffscreenRenderer() {}
+QmlOffscreenRenderer::~QmlOffscreenRenderer()
+{
+    m_context->makeCurrent(m_offscreenSurface);
+
+    delete m_qmlComponent;
+    delete m_qmlEngine;
+    delete m_quickWindow;
+    delete m_renderControl;
+
+    if (m_textureId)
+        m_context->functions()->glDeleteTextures(1, &m_textureId);
+
+    delete m_offscreenSurface;
+}
 
 void QmlOffscreenRenderer::render()
 {
@@ -96,6 +131,104 @@ void QmlOffscreenRenderer::render()
     m_quickReady = true;
 
     Q_EMIT textureUpdated();
+}
+
+void QmlOffscreenRenderer::updateSizes()
+{
+    // Behave like SizeRootObjectToView.
+    m_rootItem->setWidth(m_hostWindow->width());
+    m_rootItem->setHeight(m_hostWindow->height());
+
+    m_quickWindow->setGeometry(0, 0, m_hostWindow->width(), m_hostWindow->height());
+}
+
+void QmlOffscreenRenderer::startQuick(const QString &filename)
+{
+    m_qmlComponent = new QQmlComponent(m_qmlEngine, QUrl(filename));
+    if (m_qmlComponent->isLoading())
+        connect(m_qmlComponent, &QQmlComponent::statusChanged, this, &QmlOffscreenRenderer::run);
+    else
+        run();
+}
+
+void QmlOffscreenRenderer::resizeTexture()
+{
+    if (m_rootItem && m_context->makeCurrent(m_offscreenSurface)) {
+        m_context->functions()->glDeleteTextures(1, &(m_textureId));
+        m_textureId = 0;
+        createTexture();
+        m_context->doneCurrent();
+        updateSizes();
+        render();
+    }
+}
+
+void QmlOffscreenRenderer::exposeEvent(QExposeEvent *e) {}
+
+void QmlOffscreenRenderer::resizeEvent(QResizeEvent *e) {}
+
+void QmlOffscreenRenderer::mousePressEvent(QMouseEvent *e) {
+    // Use the constructor taking position and globalPosition. That puts position into the
+    // event's position and scenePosition, and globalPosition into the event's globalPosition. This way
+    // the scenePosition in e is ignored and is replaced by position. This is necessary
+    // because QQuickWindow thinks of itself as a top-level window always.
+    QMouseEvent mappedEvent(e->type(), e->position(), e->globalPosition(), e->button(), e->buttons(), e->modifiers());
+    QCoreApplication::sendEvent(m_quickWindow, &mappedEvent);
+}
+
+void QmlOffscreenRenderer::mouseReleaseEvent(QMouseEvent *e) {
+    QMouseEvent mappedEvent(e->type(), e->position(), e->globalPosition(), e->button(), e->buttons(), e->modifiers());
+    QCoreApplication::sendEvent(m_quickWindow, &mappedEvent);
+}
+
+void QmlOffscreenRenderer::keyPressEvent(QKeyEvent *e) {
+      QCoreApplication::sendEvent(m_quickWindow, e);
+}
+
+void QmlOffscreenRenderer::keyReleaseEvent(QKeyEvent *e) {
+       QCoreApplication::sendEvent(m_quickWindow, e);
+}
+
+void QmlOffscreenRenderer::run()
+{
+    disconnect(m_qmlComponent, &QQmlComponent::statusChanged, this, &QmlOffscreenRenderer::run);
+
+    if (m_qmlComponent->isError()) {
+        const QList<QQmlError> errorList = m_qmlComponent->errors();
+        for (const QQmlError &error : errorList)
+            qWarning() << error.url() << error.line() << error;
+        return;
+    }
+
+    QObject *rootObject = m_qmlComponent->create();
+    if (m_qmlComponent->isError()) {
+        const QList<QQmlError> errorList = m_qmlComponent->errors();
+        for (const QQmlError &error : errorList)
+            qWarning() << error.url() << error.line() << error;
+        return;
+    }
+
+    m_rootItem = qobject_cast<QQuickItem *>(rootObject);
+    if (!m_rootItem) {
+        qWarning("run: Not a QQuickItem");
+        delete rootObject;
+        return;
+    }
+
+    // The root item is ready. Associate it with the window.
+    m_rootItem->setParentItem(m_quickWindow->contentItem());
+
+    // Update item and rendering related geometries.
+    updateSizes();
+
+    // Ensure key events are received by the root Rectangle.
+    m_rootItem->forceActiveFocus();
+
+    // Initialize the render control and our OpenGL resources.
+    m_context->makeCurrent(m_offscreenSurface);
+    m_quickWindow->setGraphicsDevice(QQuickGraphicsDevice::fromOpenGLContext(m_context));
+    m_renderControl->initialize();
+    m_quickInitialized = true;
 }
 
 void QmlOffscreenRenderer::destroyTexture()
@@ -121,7 +254,15 @@ void QmlOffscreenRenderer::createTexture()
     f->glBindTexture(GL_TEXTURE_2D, m_textureId);
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     f->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    f->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_textureSize.width(), m_textureSize.height(), 0,
-                    GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    m_quickWindow->setRenderTarget(QQuickRenderTarget::fromOpenGLTexture(m_textureId, m_textureSize));
+    f->glTexImage2D(GL_TEXTURE_2D,
+                    0,
+                    GL_RGBA,
+                    m_textureSize.width(),
+                    m_textureSize.height(),
+                    0,
+                    GL_RGBA,
+                    GL_UNSIGNED_BYTE,
+                    nullptr);
+    m_quickWindow->setRenderTarget(
+        QQuickRenderTarget::fromOpenGLTexture(m_textureId, m_textureSize));
 }
